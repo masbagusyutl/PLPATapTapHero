@@ -2,16 +2,16 @@ import requests
 import json
 import time
 import random
+import os
 from datetime import datetime
 import sys
 from colorama import Fore, Style, init
-import threading
 from typing import List, Dict
 
 # Initialize colorama
 init()
 
-# Shared headers yang bisa digunakan untuk semua requests
+# Header yang digunakan untuk semua requests
 HEADERS = {
     'accept': 'application/json, text/plain, */*',
     'accept-language': 'en-GB,en;q=0.9,en-US;q=0.8',
@@ -20,6 +20,23 @@ HEADERS = {
     'referer': 'https://palapaminiapp.bittime.com/',
     'user-agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/130.0.0.0 Safari/537.36'
 }
+
+# Data misi yang tersedia
+MISSION_DATA = {
+    "available_task": [
+        {"key": "isFollowX", "type": 2},
+        {"key": "isJoinCommunity", "type": 3},
+        {"key": "isFollowIgPalapa", "type": 6},
+        {"key": "isFollowIgBittime", "type": 7},
+        {"key": "isFollowXBittime", "type": 4},
+        {"key": "isJoinCommunityBittime", "type": 5},
+        {"key": "isFollowCatidChannel", "type": 10},
+        {"key": "isPlayCatid", "type": 11},
+        {"key": "isFollowPlpaChannel", "type": 12}
+    ]
+}
+
+COMPLETED_MISSIONS_FILE = 'completed_missions.json'
 
 def print_banner():
     print(Fore.WHITE + r"""
@@ -38,6 +55,32 @@ def load_accounts() -> List[str]:
         print(Fore.RED + "Error: File data.txt tidak ditemukan!")
         sys.exit(1)
 
+def load_completed_missions():
+    """Muat data misi yang sudah selesai dari file JSON."""
+    if not os.path.exists(COMPLETED_MISSIONS_FILE):
+        return {}
+    with open(COMPLETED_MISSIONS_FILE, 'r') as file:
+        return json.load(file)
+
+def save_completed_missions(completed_missions):
+    """Simpan data misi yang sudah selesai ke file JSON."""
+    with open(COMPLETED_MISSIONS_FILE, 'w') as file:
+        json.dump(completed_missions, file, indent=4)
+
+def mark_mission_completed(username, mission_key):
+    """Tandai misi sudah selesai untuk pengguna tertentu."""
+    completed_missions = load_completed_missions()
+    if username not in completed_missions:
+        completed_missions[username] = []
+    if mission_key not in completed_missions[username]:
+        completed_missions[username].append(mission_key)
+    save_completed_missions(completed_missions)
+
+def is_mission_completed(username, mission_key):
+    """Periksa apakah misi sudah selesai untuk pengguna tertentu."""
+    completed_missions = load_completed_missions()
+    return mission_key in completed_missions.get(username, [])
+
 def login(init_data: str) -> Dict:
     try:
         url = "https://b.bittime.com/exchange-web-gateway/tg-mini-app/login"
@@ -53,6 +96,7 @@ def login(init_data: str) -> Dict:
     except Exception as e:
         print(Fore.RED + f"Kesalahan saat login: {str(e)}")
         return None
+
 
 def print_login_info(data: Dict, username: str):
     print(Fore.CYAN + "=" * 50)
@@ -168,6 +212,7 @@ def claim_daily_reward(init_data: str, uid: int) -> None:
         response.raise_for_status()
         data = response.json()
 
+
         if data["code"] == "200":
             print(Fore.GREEN + "🎉 Hadiah harian berhasil diambil.")
         else:
@@ -175,6 +220,48 @@ def claim_daily_reward(init_data: str, uid: int) -> None:
 
     except Exception as e:
         print(Fore.RED + f"Kesalahan saat mengambil hadiah harian: {str(e)}")
+
+def execute_mission(init_data: str, uid: int, mission_key: str, mission_type: int) -> bool:
+    """Eksekusi misi tertentu dan kembalikan status keberhasilan."""
+    url = "https://b.bittime.com/exchange-web-gateway/tg-mini-app/sign-in"
+    payload = {
+        "initData": init_data,
+        "uid": uid,
+        "type": str(mission_type)
+    }
+    
+    try:
+        response = requests.post(url, headers=HEADERS, json=payload)
+        response.raise_for_status()
+        data = response.json()
+        
+        if data.get("code") == "200":
+            print(Fore.GREEN + f"✅ Misi '{mission_key}' berhasil diselesaikan.")
+            return True
+        else:
+            print(Fore.RED + f"❌ Misi '{mission_key}' gagal: {data.get('message')}")
+            return False
+    except Exception as e:
+        print(Fore.RED + f"Kesalahan saat eksekusi misi '{mission_key}': {str(e)}")
+        return False
+
+def complete_all_missions(init_data: str, uid: int):
+    """Selesaikan semua misi untuk pengguna, melewati misi yang sudah selesai."""
+    username = init_data.split('username%22%3A%22')[1].split('%22')[0]
+    
+    for mission in MISSION_DATA["available_task"]:
+        mission_key = mission["key"]
+        mission_type = mission["type"]
+        
+        if is_mission_completed(username, mission_key):
+            print(Fore.YELLOW + f"⚠️ Misi '{mission_key}' sudah selesai untuk {username}. Melewati.")
+            continue
+        
+        # Eksekusi misi dan tandai sebagai selesai jika berhasil
+        success = execute_mission(init_data, uid, mission_key, mission_type)
+        if success:
+            mark_mission_completed(username, mission_key)
+        time.sleep(1)  # Penundaan opsional antara eksekusi misi
 
 def countdown_timer(seconds: int):
     for remaining in range(seconds, 0, -1):
@@ -207,6 +294,10 @@ def main():
                 
                 # Mendapatkan uid dari init_data setelah login sukses
                 uid = int(init_data.split('%22id%22%3A')[1].split('%2C')[0])
+
+                # Selesaikan semua misi untuk pengguna ini
+                complete_all_missions(init_data, uid)
+
 
                 # Jika `isSignIn` di login_data menunjukkan hadiah sudah diambil, lewati klaim hadiah
                 if login_data.get("isSignIn") == 1:
